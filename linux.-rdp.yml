@@ -1,0 +1,80 @@
+name: Permanent Linux RDP Server
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Restore Persistent Workspace
+        uses: actions/cache@v4
+        with:
+          path: /home/cynetadmin/workspace
+          key: cynet-linux-workspace-${{ github.run_id }}
+          restore-keys: |
+            cynet-linux-workspace-
+
+      - name: 3. Install Desktop Environment & RDP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server xfce4 xfce4-goodies xrdp
+          echo "xfce4-session" | sudo tee /home/runner/.xsession
+          sudo adduser xrdp ssl-cert
+          sudo systemctl restart xrdp
+
+      - name: 4. Create User (cynetadmin) with Desktop Setup
+        run: |
+          sudo useradd -m -s /bin/bash cynetadmin || true
+          echo "cynetadmin:Cynet@2026" | sudo chpasswd
+          sudo usermod -aG sudo cynetadmin
+          echo "cynetadmin ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/cynetadmin
+          echo "xfce4-session" | sudo tee /home/cynetadmin/.xsession
+          sudo chown cynetadmin:cynetadmin /home/cynetadmin/.xsession
+          sudo mkdir -p /home/cynetadmin/workspace
+          sudo chown -R cynetadmin:cynetadmin /home/cynetadmin/workspace
+
+      - name: 5. Connect Tailscale VPN & Show Connection Details
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="cynet-linux-rdp"
+          
+          TS_IP=$(tailscale ip -4)
+          
+          echo "=================================================="
+          echo "  >>> PERMANENT LINUX RDP & SSH SERVER IS LIVE! <<<"
+          echo "  Tailscale IP  : $TS_IP"
+          echo "  Username      : cynetadmin"
+          echo "  Password      : Cynet@2026"
+          echo "  ------------------------------------------------"
+          echo "  🖥️ Connect via RDP (Windows App / RD Client):"
+          echo "  >> Target IP  : $TS_IP:3389"
+          echo "  ------------------------------------------------"
+          echo "  💻 Connect via SSH:"
+          echo "  >> ssh cynetadmin@$TS_IP"
+          echo "  ------------------------------------------------"
+          echo "  💾 Persistent Folder : /home/cynetadmin/workspace"
+          echo "=================================================="
+
+      - name: 6. Server Keep-Alive (5h 55m)
+        run: |
+          for i in {1..355}; do
+            sleep 60
+            echo "[$i/355] Linux RDP Server is active..."
+          done
+
+      - name: 7. Save Workspace to Cloud
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: /home/cynetadmin/workspace
+          key: cynet-linux-workspace-${{ github.run_id }}
