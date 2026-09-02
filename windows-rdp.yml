@@ -24,22 +24,67 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
           net user CynetAdmin Cynet@2026
 
-      - name: 3. Install & Connect Tailscale VPN (As Exit Node)
+      - name: 3. Install & Connect Tailscale VPN (Auto Exit Node)
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          $ProgressPreference = 'SilentlyContinue'
+          
+          Write-Host "Downloading Tailscale..."
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi" -UseBasicParsing
+          
+          Write-Host "Installing Tailscale..."
+          Start-Process msiexec.exe -ArgumentList "/i C:\tailscale.msi /qn /norestart" -Wait
+          
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Services\Tcpip\Parameters' -Name IPEnableRouter -Value 1
+          Start-Service Tailscale -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server" --advertise-exit-node
-          Start-Sleep -Seconds 8
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "Tailscale IP : $ts_ip"
+          
+          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+          Write-Host "Connecting to Tailscale Network..."
+          & $tsPath up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server" --accept-routes --advertise-exit-node --unattended
+          
+          Start-Sleep -Seconds 5
+          $ts_ip = & $tsPath ip -4
 
-      - name: 4. Keep Server Alive (6 Hours)
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host " >>> RDP & EXIT NODE ARE READY! <<<" -ForegroundColor Cyan
+          Write-Host " Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host " Username     : CynetAdmin" -ForegroundColor Yellow
+          Write-Host " Password     : Cynet@2026" -ForegroundColor Yellow
+          Write-Host "==================================================" -ForegroundColor Green
+
+      - name: 4. Keep Server Alive and Sync Files Hourly
         run: |
-          for ($i = 1; $i -le 360; $i++) {
+          $sourcePath = "C:\Users\RunnerAdmin\Downloads"
+          $zipPath = "C:\Users\RunnerAdmin\Desktop\Backup_Files.zip"
+          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+
+          for ($i = 1; $i -le 350; $i++) {
               Start-Sleep -Seconds 60
-              Write-Host "[$i/360] Server running..."
+              Write-Host "[$i/350] Server running..."
+              
+              # هر 30 دقیقه یک‌بار دانلودها زیپ شده و به گوشی فرستاده می‌شود
+              if ($i % 30 -eq 0) {
+                  if ((Test-Path $sourcePath) -and (Get-ChildItem -Path $sourcePath).Count -gt 0) {
+                      Write-Host "Syncing files to phone..."
+                      Compress-Archive -Path "$sourcePath\*" -DestinationPath $zipPath -Force
+                      & $tsPath file send "$zipPath" "redmi-13c:"
+                  }
+              }
+          }
+
+      - name: 5. Final Backup on Cleanup
+        if: always()
+        run: |
+          $sourcePath = "C:\Users\RunnerAdmin\Downloads"
+          $zipPath = "C:\Users\RunnerAdmin\Desktop\Backup_Files.zip"
+          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+          
+          if ((Test-Path $sourcePath) -and (Get-ChildItem -Path $sourcePath).Count -gt 0) {
+              Write-Host "Sending final backup before shutdown..."
+              Compress-Archive -Path "$sourcePath\*" -DestinationPath $zipPath -Force
+              & $tsPath file send "$zipPath" "redmi-13c:"
           }
